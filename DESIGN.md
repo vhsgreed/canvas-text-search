@@ -131,6 +131,19 @@ measured instead of assumed.
 3. **Then:** LTI and Kaltura are behind their own sessions and are out of scope until one of
    them turns out to hold lecture material worth indexing.
 
+
+### What the API will not give us (measured)
+
+Three assumptions about incremental sync were wrong and are recorded so they are not retried:
+
+- Module items' `content_details` contain only `locked_for_user`; there is no page `updated_at`.
+- The pages index, which would list `updated_at`, is disabled for this course.
+- Canvas returns an `ETag` per page but **ignores `If-None-Match`**: a conditional request answers
+  200 with the full body, not 304.
+
+So the only usable differential is to compare the `ETag` after the response and reuse the stored
+text instead of re-parsing it. A future `canvas_get`-level cache cannot skip page transfers.
+
 ## Feature matrix
 
 Legend: **in** = implemented, **plan** = worth doing next, **no** = rejected with reason.
@@ -157,14 +170,14 @@ Legend: **in** = implemented, **plan** = worth doing next, **no** = rejected wit
 | Local index, no server | n/a | n/a | **in** | Privacy: course content never leaves the machine |
 | Offline after indexing | n/a | n/a | **plan** | The index is already local; only rendering needs network |
 | Facets / filter chips | yes | yes | **plan** | Clickable type and date facets beat typing `type:` for most users |
-| "Only what is new" since last index | n/a | n/a | **plan** | Canvas Course Downloader does this well; same idea for changed pages |
+| "Only what is new" since last index | n/a | n/a | **partial** (ETag reuse of parsed text; Canvas re-sends every page) | Canvas Course Downloader does this well; same idea for changed pages |
 | Saved and recent searches | no | no | **plan** | Cheap, high value during a term |
 | Result grouping by module | n/a | n/a | **plan** | Matches how students think about a course |
-| Cross-course search | n/a | n/a | **plan** | One index per course now; a merged view is the obvious next step |
-| Index from the dashboard (`/`), all courses at once | n/a | n/a | **plan** | The tool should work where the semester starts, not only inside one course |
-| PDF text extraction | n/a | n/a | **plan** | 102 files; without text the index stops at file names |
-| DOCX and PPTX text extraction | n/a | n/a | **plan** | 21 files, clean XML, cheap once the pipeline exists |
-| Linked-document resolution (Canvas viewer, SharePoint share links, source URLs) | n/a | n/a | **plan** | 19 SharePoint links and 49 file links sit outside the tree; a share link is a document nobody has indexed |
+| Cross-course search | n/a | n/a | **in** (dashboard mode) | One index per course now; a merged view is the obvious next step |
+| Index from the dashboard (`/`), all courses at once | n/a | n/a | **in** | The tool should work where the semester starts, not only inside one course |
+| PDF text extraction | n/a | n/a | **in** (unitoolkit) | 102 files; without text the index stops at file names |
+| DOCX and PPTX text extraction | n/a | n/a | **in** (unitoolkit) | 21 files, clean XML, cheap once the pipeline exists |
+| Linked-document resolution (Canvas viewer, SharePoint share links, source URLs) | n/a | n/a | **partial** (share links resolved; plain source URLs not) | 19 SharePoint links and 49 file links sit outside the tree; a share link is a document nobody has indexed |
 | Embedded video transcripts | n/a | n/a | **plan** | 20 Kaltura embeds are lecture material in the only format left unread |
 | `site:` / `url:` / `inurl:` | yes | yes | **no** | One course is one site; the operator would have exactly one valid value |
 | `lang:` | no | yes | **no** | Corpus is Swedish with English articles; no language split to filter on |

@@ -14,7 +14,7 @@ it in a few milliseconds.
 | Modules | module name plus item titles |
 | Files | file name and extension (contents are not downloaded) |
 
-144 documents for a normal course, built in about 4 seconds, roughly 300 KB per course in
+156 documents for a normal course, built in about 4 seconds, roughly 300 KB per course in
 `chrome.storage.local`. Rebuilt every 6 hours or with the ↻ button.
 
 ## Search syntax
@@ -67,7 +67,7 @@ No token, no options file, no third-party calls. It uses the session cookie your
 already has, so it cannot read anything you are not allowed to see.
 
 ## Verified behaviour
-Tested live against SHH's PRY course (144 documents):
+Tested live against SHH's PRY course (156 documents):
 
 | Test | Result |
 |---|---|
@@ -80,7 +80,7 @@ Tested live against SHH's PRY course (144 documents):
 | `OURGINAL` with case on | 1, and `ourginal` with case on gives 0 |
 | `pla[gy]iat\w*` regex | 1 |
 | `[unclosed` regex | error shown, no crash |
-| query time | 0 to 4 ms on the 144-document index |
+| query time | 0 to 11 ms on the 156-document index |
 
 ## Notes
 - `matches` and `host_permissions` are pinned to `https://shh.instructure.com/*`. Change both
@@ -90,3 +90,16 @@ Tested live against SHH's PRY course (144 documents):
 
 ## Licence
 MIT.
+
+## Beyond one course
+
+- **Dashboard mode:** the script also runs on `/` and `/dashboard*`; it indexes every enrolled
+  course and searches them together, each hit labelled with its course.
+- **Kommande tab:** assignments from `planner/items` plus course `calendar_events`, sorted by
+  time, with a countdown and late items flagged.
+- **Differential reindex:** page text is reused when the response `ETag` matches. Canvas still
+  transfers every page (it ignores `If-None-Match` and exposes no page `updated_at` through
+  module items), so the saving is parsing, not bandwidth.
+- **Permissions:** Canvas is the only host declared. The machine-local endpoint
+  (`127.0.0.1:8791`, `https://*.ts.net`) is an *optional* permission, requested from the panel
+  when the user connects it, so the store listing asks for Canvas only.
