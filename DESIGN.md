@@ -59,6 +59,25 @@ no token, and the reason a token is only needed for offline work.
 Module items by type: 26 Page, 19 Assignment, 10 SubHeader, 2 File, 2 ExternalUrl
 (Vårdhandboken redirects), 1 ExternalTool (Akademiskt skrivande).
 
+**Per course, not per account.** A fourth course or a later term needs `surface` run again:
+course 28 (Informationskompetens) answers **403 on `/files`**, so its file tree does not exist
+for a student even though its pages do.
+
+### Where the material actually lives
+
+Counting every `href` inside the mirrored pages:
+
+| Course | Links in pages | to Canvas files | to SharePoint/OneDrive | to video | elsewhere |
+|---|---|---|---|---|---|
+| 2416 PRY | 104 | 16 | 8 | 0 | 52 |
+| 2415 OMV | 62 | 33 | 11 | 4 | 4 |
+| 28 Informationskompetens | 106 | 0 (`/files` 403) | 0 | 16 | 78 (databases) |
+
+File trees: 2416 = 36 pdf, 7 docx, 1 pptx. 2415 = 47 pdf, 4 docx, 5 pptx, 1 html, 1 jpg.
+So 102 documents are behind file-tree links, and a further 19 SharePoint share links are not in
+any tree at all and never appear in `/files`. A name-only index therefore covers roughly half a
+course's reading material: **the file tree is not the corpus, it is one of three entrances**.
+
 ### What that changed in the build
 
 Three of these findings were defects, not features:
@@ -116,6 +135,11 @@ Legend: **in** = implemented, **plan** = worth doing next, **no** = rejected wit
 | Saved and recent searches | no | no | **plan** | Cheap, high value during a term |
 | Result grouping by module | n/a | n/a | **plan** | Matches how students think about a course |
 | Cross-course search | n/a | n/a | **plan** | One index per course now; a merged view is the obvious next step |
+| Index from the dashboard (`/`), all courses at once | n/a | n/a | **plan** | The tool should work where the semester starts, not only inside one course |
+| PDF text extraction | n/a | n/a | **plan** | 102 files; without text the index stops at file names |
+| DOCX and PPTX text extraction | n/a | n/a | **plan** | 21 files, clean XML, cheap once the pipeline exists |
+| Linked-document resolution (Canvas viewer, SharePoint share links, source URLs) | n/a | n/a | **plan** | 19 SharePoint links and 49 file links sit outside the tree; a share link is a document nobody has indexed |
+| Embedded video transcripts | n/a | n/a | **plan** | 20 Kaltura embeds are lecture material in the only format left unread |
 | `site:` / `url:` / `inurl:` | yes | yes | **no** | One course is one site; the operator would have exactly one valid value |
 | `lang:` | no | yes | **no** | Corpus is Swedish with English articles; no language split to filter on |
 | `related:`, `link:`, `cache:` | yes | partial | **no** | Web-graph features with no meaning inside one course |
@@ -183,6 +207,29 @@ navigation; a `<mark>` injected by an extension gets wiped or fights React. The 
 API (`CSS.highlights` + `::highlight()`) paints ranges without touching nodes, and is the plan
 for in-page highlighting after a deep link.
 
+## Boundary: whose material ends up in the index
+
+Deeper extraction means indexing documents written by teachers, publishers and classmates. The
+line this project draws, written down so it does not drift:
+
+- **Read what the student's own session is offered.** Page bodies, file trees, links inside
+  pages, share links on pages the course published. That is the same set a student can open by
+  hand, and indexing it locally is reading with better memory.
+- **Do not guess URLs.** No enumerating ids, no walking folders that the session refuses
+  (`403` on `/files` for course 28 stays a 403), no unlisted or unpublished material reached by
+  constructing a URL. Width of access must not grow; only speed of recall.
+- **Do not redistribute.** Extracted text stays in a local index. Nothing from the index is
+  uploaded, published, committed to the repo or sent to a model provider. The repo ships code,
+  never course material.
+- **Keep provenance.** Every extracted passage stores file name, course, and origin URL, so a
+  claim can be checked against the source the way a citation must be.
+- **Third-party licences still apply to copies.** A publisher PDF that a student may read does
+  not become yours to keep, quote at length, or hand on. Local search is the narrow use; an
+  export button would not be.
+- **Watch what a share link exposes.** A SharePoint share link can open a document uploaded by
+  someone else under their name, sometimes with their comments. Index it for the course's
+  content, not the author's identity, and never index other students' submissions.
+
 ## Out of scope, on purpose
 
 - Any write operation against Canvas: no submitting, no posting, no grade access.
@@ -193,6 +240,14 @@ for in-page highlighting after a deep link.
 
 1. Facets for type and date range (replaces most typed operators).
 2. In-page highlight of all matches after arriving from a deep link (Custom Highlight API).
-3. Cross-course index and a merged search view.
-4. PDF text extraction behind an explicit "include document text" switch.
-5. Optional semantic layer, local-only, benchmarked against the lexical baseline before shipping.
+3. Dashboard entry point: the extension also runs on `shh.instructure.com/` and indexes every
+   enrolled course, with one merged result list and per-course progress. Needs a wider
+   `matches` pattern, a crawl budget (Canvas throttles), and a visibility layer so a hit in
+   another course is obvious.
+4. Document text: PDF, DOCX and PPTX extraction behind one switch, with a size cap and a
+   per-file skip list. 102 tree files, 21 of them Office XML.
+5. Linked documents: resolve links inside pages, including the Canvas document viewer, the
+   `download.aspx?share=` form for SharePoint, and plain source URLs. This is where the other
+   half of the reading list lives.
+6. Video transcripts, if Kaltura exposes them to the student session at all.
+7. Optional semantic layer, local-only, benchmarked against the lexical baseline before shipping.
