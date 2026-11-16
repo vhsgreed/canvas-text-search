@@ -6,7 +6,6 @@
   const API = '/api/v1';
   const TTL = 6 * 60 * 60 * 1000;
   const KEY = cid => `idx:v3:${cid}`;
-  const LOCAL = ['http://127.0.0.1:8791', 'https://geekom.tail4fff58.ts.net'];
   const C = globalThis.CTS_CORE;
   const courseId = (location.pathname.match(/\/courses\/(\d+)/) || [])[1];
   const dash = !courseId && (location.pathname === '/' || location.pathname.startsWith('/dashboard'));
@@ -134,25 +133,14 @@
   }
 
   // ---------------------------------------------------------------- local deep layer
-  let localBase;
+  // The service worker does the request: a page-initiated fetch to loopback or a private
+  // address is blocked by Chrome's Local Network Access, even with CORS headers.
   async function localSearch(q) {
-    if (localBase === undefined) {
-      localBase = null;
-      for (const b of LOCAL) {
-        try {
-          const r = await fetch(`${b}/health`, { signal: AbortSignal.timeout(1200) });
-          if (r.ok) { localBase = b; break; }
-        } catch { /* not running, that is fine */ }
-      }
-    }
-    if (!localBase) return null;
     const cid = courseId || (await coursesCache())[0]?.id;
     if (!cid) return null;
     try {
-      const r = await fetch(`${localBase}/search?course=${cid}&q=${encodeURIComponent(q)}&docs=1&limit=10`,
-        { signal: AbortSignal.timeout(8000) });
-      if (!r.ok) return null;
-      return await r.json();
+      const res = await chrome.runtime.sendMessage({ type: 'localSearch', course: cid, q, limit: 10 });
+      return res && res.ok ? res.data : null;
     } catch { return null; }
   }
 
