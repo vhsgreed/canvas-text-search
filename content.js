@@ -7,7 +7,17 @@
   const courseId = (location.pathname.match(/\/courses\/(\d+)/) || [])[1];
   if (!courseId || document.getElementById('cts-root') || !C) return;
 
-  const strip = h => new DOMParser().parseFromString(h || '', 'text/html').body.textContent || '';
+  // Block elements become "\n" so the index keeps the page's paragraph structure. Without
+  // this, "</p><p>" glues sentences together and every text-fragment anchor that spans
+  // two paragraphs silently fails to match.
+  const strip = h => {
+    const html = String(h || '')
+      .replace(/<\/(p|div|li|ul|ol|h[1-6]|tr|table|blockquote|section|article)>/gi, '\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<li[^>]*>/gi, '\n');
+    const txt = new DOMParser().parseFromString(html, 'text/html').body.textContent || '';
+    return txt.replace(/[ \t\u00a0]+/g, ' ').replace(/\n[ ]*/g, '\n').replace(/\n{2,}/g, '\n').trim();
+  };
   const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -100,7 +110,7 @@
   }
 
   async function getIndex(cid, force, onProgress) {
-    const key = `idx:${cid}`;
+    const key = `idx:v2:${cid}`; // v2: block-aware text, cached v1 indexes are ignored
     if (!force) {
       const c = (await chrome.storage.local.get(key))[key];
       if (c && Date.now() - c.ts < TTL) return c;
@@ -202,11 +212,10 @@
     return out;
   }
 
-  // phrase used for the text fragment, so the page opens on the match itself
+  // phrase used for the text fragment: whole words, verified to exist in the document.
+  // Returns '' when nothing verifies, which yields a plain link instead of a dead fragment.
   function anchorPhrase(hit, raw, o) {
-    if (o.regex || o.fuzzy) return (hit.body || hit.title).slice(hit.at || 0, (hit.at || 0) + 60);
-    const terms = C.parseQuery(raw, o).terms;
-    return terms.length ? terms[0] : '';
+    return C.anchorTarget(hit, raw, o);
   }
 
   async function run() {

@@ -158,6 +158,79 @@ test('deep link appends a text fragment and encodes reserved characters', () => 
   assert.equal(C.deepLink('/a', ''), '/a');
 });
 
+// Regression: a real Canvas page produced "#:~:text=ontrol (OURGINAL)Observera att ..."
+// The offset started mid-word and crossed a block boundary, so Chrome ignored the fragment.
+const pageDoc = mk('sida',
+  'Anvisningar och formalia - Examination inlämningsuppgift',
+  'Information om plagiatkontrol (OURGINAL) Observera att OURGINAL, en automatisk mjukvara för textmatchning, används vid bedömning av svar.',
+  { date: '2026-10-01' });
+
+test('anchor never starts mid-word', () => {
+  const r = C.search({ cid: 1, ts: 0, docs: [pageDoc] }, 'OURGINAL');
+  const anchor = C.anchorTarget(r.hits[0], 'OURGINAL', {});
+  assert.ok(anchor && anchor.length > 0, 'an anchor is produced');
+  assert.ok(!/^ontrol/i.test(anchor), 'must not begin inside "plagiatkontrol"');
+  assert.ok(/^(Information|plagiatkontrol|OURGINAL)/i.test(anchor), `unexpected anchor: ${anchor}`);
+  assert.ok(pageDoc.body.includes(anchor), 'the phrase exists verbatim in the document');
+});
+
+test('anchor never spans two blocks', () => {
+  // the second real failure: "</p><p>" was glued into "(OURGINAL)Observera", so the
+  // phrase crossed a block boundary and Chrome ignored the fragment
+  const body = 'Information om plagiatkontrol (OURGINAL)\nObservera att OURGINAL, en automatisk mjukvara för textmatchning, används.';
+  const d = mk('sida', 'T', body, {});
+  const r = C.search({ cid: 1, ts: 0, docs: [d] }, 'OURGINAL');
+  const a = C.anchorTarget(r.hits[0], 'OURGINAL', {});
+  assert.ok(a, 'an anchor is produced');
+  assert.ok(!a.includes('\n'), `anchor contains a newline: ${JSON.stringify(a)}`);
+  assert.ok(body.split('\n').some(l => l.includes(a)), `anchor spans blocks: ${a}`);
+});
+
+test('anchor contains the search term', () => {
+  // regression: the anchor scrolled near the match but contained none of the query,
+  // because offsets were measured in the whitespace-collapsed string
+  for (const [opts, raw] of [[{}, 'OURGINAL'], [{ fuzzy: true }, 'OURIGINAL']]) {
+    const r = C.search({ cid: 1, ts: 0, docs: [pageDoc] }, raw, opts);
+    const anchor = C.anchorTarget(r.hits[0], raw, opts);
+    assert.ok(C.fold(anchor).includes('ourginal'), `${raw} -> ${anchor}`);
+  }
+});
+
+test('anchor is whole words and at least three of them', () => {
+  const r = C.search({ cid: 1, ts: 0, docs: [pageDoc] }, 'OURGINAL');
+  const anchor = C.anchorTarget(r.hits[0], 'OURGINAL', {});
+  assert.ok(anchor.split(/\s+/).length >= 3, `too short: ${anchor}`);
+  assert.ok(!/\s$/.test(anchor) && !/^\s/.test(anchor), 'no dangling whitespace');
+  assert.ok(anchor.length <= 120, 'stays inside the fragment budget');
+});
+
+test('unverifiable anchor degrades to a plain link', () => {
+  assert.equal(C.deepLink('/p/x', ''), '/p/x');
+  assert.equal(C.fragmentMatches('', 't', 'b'), false);
+  assert.equal(C.fragmentMatches('zzz not here at all', 't', 'b'), false);
+  assert.equal(C.anchorFor('t', 999, 'short'), '');
+});
+
+test('an offset inside a word is walked back to the word start', () => {
+  // this is the exact failure: "plagiatkontrol" sliced at "ontrol"
+  const at = pageDoc.body.indexOf('ontrol');
+  const anchor = C.anchorFor(pageDoc.title, at, pageDoc.body);
+  assert.ok(anchor && !/^ontrol/.test(anchor), `starts mid-word: ${anchor}`);
+  assert.ok(anchor.includes('plagiatkontrol'), `expected the whole word present: ${anchor}`);
+  assert.ok(!anchor.includes('nformation om plagiatkontrol (OURGINAL)Observera'),
+    'must not glue two blocks together');
+});
+
+test('fuzzy and regex hits still get a verified anchor', () => {
+  const fz = C.search({ cid: 1, ts: 0, docs: [pageDoc] }, 'OURIGINAL', { fuzzy: true });
+  const a1 = C.anchorTarget(fz.hits[0], 'OURIGINAL', { fuzzy: true });
+  assert.ok(a1 && pageDoc.body.includes(a1), `fuzzy anchor not in body: ${a1}`);
+  const rx = C.search({ cid: 1, ts: 0, docs: [pageDoc] }, 'ourg\\w*', { regex: true });
+  assert.equal(rx.total, 1, 'regex fixture must match');
+  const a2 = C.anchorTarget(rx.hits[0], 'ourg\\w*', { regex: true });
+  assert.ok(a2 && pageDoc.body.includes(a2), `regex anchor not in body: ${a2}`);
+});
+
 test('snippet centres on the match and never exceeds its window', () => {
   const doc = mk('sida', 'T', 'x'.repeat(500) + ' needle ' + 'y'.repeat(500));
   const s = C.snippet(doc, 507);

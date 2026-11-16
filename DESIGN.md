@@ -92,6 +92,32 @@ case-insensitive, only the first fragment scrolls, dashes and commas must be per
 and the directive is stripped from the URL so the page cannot read it. Where the browser does
 not support it, the link still lands on the right page.
 
+### Deep links: the three ways they fail, measured
+
+The first implementation produced fragments that looked right and did nothing. Each failure was
+reproduced on a real Canvas page and is now pinned by a test.
+
+| Cause | Symptom | Fix | Evidence |
+|---|---|---|---|
+| Anchor started **mid-word** (`ontrol`) because the offset counted the page title | no scroll | offsets measured in the body, then walked to a word boundary | scrollTop 0 → 2189 |
+| Text extraction **glued blocks**: `</p><p>` became `(OURGINAL)Observera` | no scroll | block elements become `\n` at index time; anchors are cut at the line | scrollTop 0 → 2189 |
+| Anchor positioned in the **whitespace-collapsed** string, so it drifted to unrelated text | scrolled to the wrong paragraph | offsets measured in the original body, anchor must contain the term | match off-screen → `matchTop 644 of 1289` |
+
+Measured on `pages/anvisningar-och-formalia-…` in the agent Chrome profile: the shipped anchor
+`Information om plagiatkontrol (OURGINAL` scrolls the real scroll container
+(`#student-study-drawer-content`) to `scrollTop 2189` with the match visible; the original
+fragment leaves `scrollTop 0` and the text at 2833 px, below the fold.
+
+Two consequences for the code. `fragmentMatches()` verifies every anchor against the indexed
+body before it is used, and an anchor that cannot be verified yields a plain link rather than a
+dead fragment. Because Canvas scrolls an inner container, not the window, a deep link is the
+only mechanism that works without injecting code into the page.
+
+Note that the browser strips the `#:~:text=` part from `location.href` after applying it, which
+is required by the spec (the page must not be able to read it). A missing fragment in the
+address bar is therefore normal and not evidence of failure; what matters is the scroll
+position.
+
 **Why not inject highlight markup into Canvas pages.** Canvas re-renders its own DOM on
 navigation; a `<mark>` injected by an extension gets wiped or fights React. The Custom Highlight
 API (`CSS.highlights` + `::highlight()`) paints ranges without touching nodes, and is the plan

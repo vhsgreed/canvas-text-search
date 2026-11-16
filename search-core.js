@@ -17,6 +17,11 @@
     .replace(/[åä]/g, 'a').replace(/ö/g, 'o').replace(/[éè]/g, 'e')
     .replace(/\s+/g, ' ').trim();
 
+  // lowercase + Swedish folding, but keeps "\n" so block boundaries survive
+  const normKeep = s => (s == null ? '' : String(s)).toLowerCase()
+    .replace(/[åä]/g, 'a').replace(/ö/g, 'o').replace(/[éè]/g, 'e')
+    .replace(/[ \t\u00a0]+/g, ' ');
+
   const escRx = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   // Damerau-Levenshtein with an early exit; catches typos, insertions and transpositions
@@ -133,7 +138,7 @@
         let hits;
         try { hits = [...hay.matchAll(q.regex)]; } catch { return null; }
         if (!hits.length) return null;
-        return { score: hits.length + 5, at: hits[0].index };
+        return { score: hits.length + 5, at: hits[0].index, anchor: hits[0][0] };
       };
     }
 
@@ -155,7 +160,7 @@
       if (nots.some(x => hay.includes(x))) return null;
       if (titleTerms.some(x => !title.includes(x))) return null;
 
-      let score = 0, at = -1;
+      let score = 0, at = -1, bestText = '';
       for (const term of terms) {
         const short = term.t.length <= 3;
         let c, anchor = term.t;
@@ -170,10 +175,11 @@
           const pos = hay.indexOf(anchor);
           at = pos < 0 ? 0 : pos;
         }
+        if (anchor.length > bestText.length) bestText = anchor; // the real indexed spelling
         score += (title.includes(anchor) ? 12 : 0) + Math.min(c, 6);
       }
       if (doc.type === 'anvisning' || doc.type === 'sida') score += 3;
-      return { score, at };
+      return { score, at, anchor: bestText };
     };
   }
 
@@ -196,6 +202,9 @@
         const key = d.href + '|' + d.title;
         const prev = found.get(key);
         if (!prev || r.score > prev.score) found.set(key, Object.assign({}, d, { score: r.score, at: r.at }));
+        // keep the longest usable anchor across OR alternatives
+        const cur = found.get(key);
+        if (r.anchor && (!cur.anchor || r.anchor.length > cur.anchor.length)) cur.anchor = r.anchor;
       }
     }
     if (!sawConstraints) return { hits: [], total: 0, empty: true };
@@ -227,13 +236,84 @@
     return best && best.dist <= 2 ? best.word : null;
   }
 
-  // Text fragment deep link: the browser scrolls to the phrase and highlights it
+  // Text fragment deep link: the browser scrolls to the phrase and highlights it.
+  // An empty phrase returns the bare href, because a fragment that cannot match is dead weight.
   function deepLink(href, phrase) {
     if (!href || !phrase) return href;
     const clean = String(phrase).replace(/[\r\n]+/g, ' ').trim().slice(0, 120);
     if (!clean) return href;
     const encoded = encodeURIComponent(clean).replace(/-/g, '%2D').replace(/,/g, '%2C');
     return `${href}${href.includes('#') ? '&' : '#:~:'}text=${encoded}`;
+  }
+
+  // A text directive only matches a run of text inside one block, starting at a word
+  // boundary. So an anchor must be whole words that actually occur in the document.
+  const MIN_FRAGMENT = 12;
+
+  function foldWords(s) {
+    return fold(s).split(' ').filter(x => x !== '');
+  }
+
+  // A directive never crosses a block boundary, so a phrase must sit inside one line.
+  // Bodies keep "\n" where the HTML had block elements; see strip() in content.js.
+  function fragmentMatches(anchor, title, body) {
+    const a = normKeep(anchor || '').trim();
+    if (!a || a.length < 8) return false;
+    const lines = normKeep(`${title || ''}\n${body || ''}`).split('\n');
+    if (lines.some(l => l.includes(a))) return true;
+    const w = a.split(' ');
+    return w.length > 2 && lines.some(l => l.includes(w.slice(0, 3).join(' ')));
+  }
+
+  // Longest verified phrase starting at the match: whole words, at most 8, one block.
+  function anchorFor(title, at, body) {
+    const b = body || '';
+    const isW = ch => !!ch && /[0-9a-zA-ZåäöÅÄÖé]/.test(ch);
+    let i = Math.max(0, Math.min(at || 0, b.length));
+    while (i > 0 && isW(b[i - 1]) && isW(b[i])) i--;   // back to the start of the word
+    while (i < b.length && !isW(b[i])) i++;            // then forward to the next word
+
+    // work inside the block that contains the match
+    const lineStart = b.lastIndexOf('\n', Math.max(0, i - 1)) + 1;
+    let lineEnd = b.indexOf('\n', i);
+    if (lineEnd < 0) lineEnd = b.length;
+    const line = b.slice(lineStart, lineEnd).replace(/[ \t\u00a0]+/g, ' ');
+
+    // word offsets within the line, so a phrase can start a few words earlier for context
+    const words = [];
+    const re = /[0-9a-zA-ZåäöÅÄÖé]+/g;
+    let m;
+    while ((m = re.exec(line))) words.push({ w: m[0], i: m.index });
+    if (!words.length) return '';
+    let k = words.findIndex(x => x.i + x.w.length > i - lineStart);
+    if (k < 0) k = 0;
+
+    for (let start = Math.max(0, k - 3); start <= k; start++) {
+      for (let n = Math.min(8, words.length - start); n >= 1; n--) {
+        const cand = line.slice(words[start].i,
+          words[start + n - 1].i + words[start + n - 1].w.length).trim();
+        if (cand.length >= MIN_FRAGMENT && fragmentMatches(cand, title, b)) return cand;
+      }
+    }
+    return fragmentMatches(words[k].w, title, b) ? words[k].w : '';
+  }
+
+  // Whole policy for "what phrase should the result link point at", so it can be tested.
+  function anchorTarget(doc, raw, opts) {
+    const o = Object.assign({}, opts);
+    const body = doc.body || '';
+    let seed = doc.anchor || '';
+    if (!o.regex && !o.fuzzy) {
+      const terms = parseQuery(raw, o).terms.slice().sort((a, b) => b.length - a.length);
+      if (terms.length) seed = terms[0];
+    }
+    let at = doc.at || 0;
+    if (seed) {
+      // offsets must be measured in the original body: fold() collapses whitespace and shifts them
+      const p = body.toLowerCase().indexOf(String(seed).toLowerCase());
+      if (p >= 0) at = p;
+    }
+    return anchorFor(doc.title, at, body);
   }
 
   function snippet(doc, at, span) {
@@ -244,7 +324,8 @@
   }
 
   const api = { fold, escRx, editDistance, splitOr, parseQuery, normaliseDate, countPlain,
-    countWord, fuzzyWords, makeMatcher, search, suggest, deepLink, snippet, TYPES };
+    countWord, fuzzyWords, makeMatcher, search, suggest, deepLink, snippet, TYPES,
+    fragmentMatches, anchorFor, anchorTarget, foldWords, normKeep };
 
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.CTS_CORE = api;
