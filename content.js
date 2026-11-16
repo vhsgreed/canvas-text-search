@@ -39,13 +39,19 @@
   // ---------------------------------------------------------------- indexing
   async function buildIndex(cid, onProgress) {
     const docs = [];
-    const seen = new Set();
+    // key -> position. A module item creates an empty stub for its assignment/page, and the
+    // full document arrives later with the same key; the richer one must win, or rubric text
+    // and task descriptions are silently dropped.
+    const at = new Map();
     const add = (type, title, body, href, ext, date) => {
       const key = `${type}|${title}|${href}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      docs.push({ type, title: title || '(utan titel)', body: body || '', href: href || '#',
-                  ext: ext || '', date: (date || '').slice(0, 10) });
+      const doc = { type, title: title || '(utan titel)', body: body || '', href: href || '#',
+                    ext: ext || '', date: (date || '').slice(0, 10) };
+      const pos = at.get(key);
+      if (pos === undefined) { at.set(key, docs.length); docs.push(doc); return; }
+      const mine = doc.body.length + doc.date.length;
+      const theirs = docs[pos].body.length + docs[pos].date.length;
+      if (mine > theirs) docs[pos] = doc;
     };
 
     onProgress('moduler');
@@ -78,7 +84,9 @@
 
     onProgress('uppgifter');
     try {
-      for (const a of await apiAll(`/courses/${cid}/assignments`)) {
+      // include[]=rubric matters: without it Canvas returns an empty rubric array, and the
+      // grading criteria are exactly what students search for
+      for (const a of await apiAll(`/courses/${cid}/assignments?include[]=rubric`)) {
         const rub = (a.rubric || []).map(r => `${r.description} ${r.long_description || ''}`).join(' ');
         add('uppgift', a.name, `${strip(a.description)} ${rub}`,
             `/courses/${cid}/assignments/${a.id}`, '', a.updated_at || a.created_at || '');
@@ -110,7 +118,7 @@
   }
 
   async function getIndex(cid, force, onProgress) {
-    const key = `idx:v2:${cid}`; // v2: block-aware text, cached v1 indexes are ignored
+    const key = `idx:v3:${cid}`; // v3: rubric text; older caches are ignored
     if (!force) {
       const c = (await chrome.storage.local.get(key))[key];
       if (c && Date.now() - c.ts < TTL) return c;

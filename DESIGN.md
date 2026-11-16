@@ -26,6 +26,66 @@ here, and which are noise in a single-course corpus.
 - CSS Custom Highlight API (`::highlight()`), the DOM-safe way to paint matches.
   Source: https://developer.mozilla.org/en-US/docs/Web/API/CSS_Custom_Highlight_API
 
+## Phase 0: what the live session exposes (measured 2026-11-16)
+
+Before building search features, the surface has to be known. Probed course 2416 twice: once
+with the API token, once with the page's own cookie session via `fetch(..., {credentials:
+'same-origin'})`. **Both returned identical statuses**, which is the reason the extension needs
+no token, and the reason a token is only needed for offline work.
+
+| Endpoint | Status | Items | Usable as |
+|---|---|---|---|
+| `modules?include[]=items` | 200 | 7 modules, 60 items | the only route to pages |
+| `pages` (index) | **404** "Sidan har avaktiverats för den här kursen" | 0 | nothing; also kills `search_term` |
+| `pages/<slug>` (single) | 200 | 26 pages | yes, via module items |
+| `assignments?include[]=rubric` | 200 | 15, of which **4 carry rubrics** (8–10 rows each) | task text + criteria |
+| `assignments` (no include) | 200 | 15 with `rubric: []` | silently loses all criteria |
+| `rubrics` | **403** | 0 | students are refused |
+| `quizzes` | **404** | 0 | disabled for this course |
+| `discussion_topics` | 200 | 0 threads | nothing here |
+| `discussion_topics?only_announcements=true` | 200 | **12** | the "anvisningar" feed |
+| `files?per_page=100` | 200 | 44 | names, sizes, download URLs |
+| `folders` | 200 | 10 | file tree |
+| `students/submissions?student_ids[]=self` | 200 | 15 | own grades, state, submitted bodies |
+| `enrollments?user_id=self` | 200 | 1 | role and section |
+| `planner/items` | 200 | **53** | one feed with assignments, files, announcements |
+| `external_tools` | 200 | 3 | Akademiskt skrivande, Informationskompetens, Vårdjuridik |
+| `visible_course_nav_tools` | 200 | 4 | Kaltura Mediagalleriet (`kaf-canvas-328.kaltura.nordu.net`) |
+| `features` | 200 | 26 flags | `smart_search` is *allowed* yet the pages tool is off |
+| `users/self/todo` | 200 | 0 | Canvas thinks nothing is pending, which is wrong |
+| `users/self/upcoming_events` | 200 | 1 | thin next to `planner/items` |
+| `users/self/groups` | 200 | 3 | group work |
+
+Module items by type: 26 Page, 19 Assignment, 10 SubHeader, 2 File, 2 ExternalUrl
+(Vårdhandboken redirects), 1 ExternalTool (Akademiskt skrivande).
+
+### What that changed in the build
+
+Three of these findings were defects, not features:
+
+1. **Rubrics were never indexed.** `assignments` without `include[]=rubric` returns
+   `rubric: []`, so 37 grading criteria across 4 examinations were absent. Fixed in both the
+   extension and `shhkit.search`; `"definition av samverkan i team"` now finds the Jämlik and
+   Samverkan criteria.
+2. **Rich documents were being dropped.** A module item creates an empty stub for its
+   assignment, and the dedupe kept the *first* copy, so task descriptions and rubrics were
+   discarded even when fetched. The index now keeps the richest version of a document.
+3. **Pages are only reachable through modules.** With the page index off (404), a page that is
+   not linked from a module is invisible to both the extension and the API. That is a hard
+   ceiling on coverage, and the reason the tool must say how many documents it has.
+
+`shhkit surface course=<id>` now repeats this probe on demand, so the next course can be
+measured instead of assumed.
+
+### Build order
+
+1. **Done:** inventory (`surface`), index fields (pages, announcements, assignments + rubrics,
+   files, module items), deep links, ranking, tests.
+2. **Next:** read `planner/items` for deadlines instead of stitching assignments and calendar;
+   add own submissions and grades to the searchable corpus.
+3. **Then:** LTI and Kaltura are behind their own sessions and are out of scope until one of
+   them turns out to hold lecture material worth indexing.
+
 ## Feature matrix
 
 Legend: **in** = implemented, **plan** = worth doing next, **no** = rejected with reason.

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Canvas Text Search",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Full-text search across a Canvas course: pages, assignments with rubrics, modules, discussions and files. Google-style operators, regex, fuzzy match, deep links to the match.",
   "permissions": ["storage"],
   "host_permissions": ["https://shh.instructure.com/*"],
