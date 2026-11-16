@@ -30,7 +30,10 @@
       const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
       if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
       const data = await r.json();
-      if (!Array.isArray(data)) return data;
+      if (!Array.isArray(data)) {
+        if (data && typeof data === 'object') data.etag = r.headers.get('ETag') || '';
+        return data;
+      }
       out.push(...data);
       const m = (r.headers.get('Link') || '').match(/<([^>]+)>;\s*rel="next"/);
       url = m ? m[1] : null;
@@ -39,15 +42,20 @@
   }
 
   // ---------------------------------------------------------------- indexing
-  async function buildIndex(cid, onProgress) {
+  async function buildIndex(cid, onProgress, prev) {
     const docs = [];
+    // Differential reindex: modules carry content_details.updated_at for pages, so an
+    // unchanged page body is not fetched again. Everything else is one cheap list call.
+    const prevByHref = new Map();
+    if (prev) for (const d of (prev.docs || [])) prevByHref.set(d.href, d);
+    let reused = 0, fetched = 0;
     // A module item creates an empty stub for its assignment or page; the full document
     // arrives later with the same key, so the richer one must win.
     const at = new Map();
-    const add = (type, title, body, href, ext, date) => {
+    const add = (type, title, body, href, ext, date, etag) => {
       const key = `${type}|${title}|${href}`;
       const doc = { type, title: title || '(utan titel)', body: body || '', href: href || '#',
-                    ext: ext || '', date: (date || '').slice(0, 10) };
+                    ext: ext || '', date: (date || '').slice(0, 10), etag: etag || '' };
       const pos = at.get(key);
       if (pos === undefined) { at.set(key, docs.length); docs.push(doc); return; }
       if (doc.body.length + doc.date.length > docs[pos].body.length + docs[pos].date.length) docs[pos] = doc;
@@ -55,29 +63,57 @@
 
     onProgress('moduler');
     let modules = [];
-    try { modules = await apiAll(`/courses/${cid}/modules?include[]=items`); }
-    catch (e) { console.warn('[cts] modules', e); }
-    const pageUrls = new Map();
+    try {
+      modules = await apiAll(`/courses/${cid}/modules?include[]=items&include[]=content_details`);
+    } catch (e) {
+      try { modules = await apiAll(`/courses/${cid}/modules?include[]=items`); }
+      catch (e2) { console.warn('[cts] modules', e2); }
+    }
+    const pageUrls = new Map();   // slug -> { url, updated }
     for (const m of modules) for (const it of (m.items || [])) {
       add('modul', `${m.name}: ${it.title}`, m.name, it.html_url || it.url, '', '');
-      if (it.type === 'Page' && (it.page_url || it.url)) pageUrls.set(it.page_url || it.url, it.url);
+      if (it.type === 'Page' && (it.page_url || it.url)) {
+        pageUrls.set(it.page_url || it.url, {
+          url: it.url,
+          updated: ((it.content_details || {}).updated_at || '').slice(0, 10),
+        });
+      }
       if (it.type === 'Assignment' && it.content_id) add('uppgift', it.title, '', `/courses/${cid}/assignments/${it.content_id}`, '', '');
       if (it.type === 'Discussion' && it.content_id) add('diskussion', it.title, '', `/courses/${cid}/discussion_topics/${it.content_id}`, '', '');
     }
 
+    /* Differential reindex, as far as Canvas allows it. Measured on this account:
+       - module items' content_details carry only locked_for_user, no updated_at
+       - the pages index (which would list updated_at) is disabled
+       - Canvas returns an ETag but ignores If-None-Match, so the body always transfers
+       So an unchanged page still costs a request, and the only saving left is parsing:
+       when the ETag matches the stored one, the previous text is reused instead of
+       stripping 13 kB of HTML and re-tokenising it. */
     let n = 0;
     const queue = [...pageUrls.keys()];
+    const total = pageUrls.size;
     const worker = async () => {
       while (queue.length) {
         const slug = queue.shift();
-        onProgress(`sidor ${++n}/${pageUrls.size}`);
+        onProgress(`sidor ${++n}/${total}`);
+        const href = `/courses/${cid}/pages/${slug}`;
+        const old = prevByHref.get(href);
         try {
           const p = await apiAll(`/courses/${cid}/pages/${encodeURIComponent(slug)}`);
-          add('sida', p.title || slug, strip(p.body), `/courses/${cid}/pages/${slug}`, '', p.updated_at || '');
+          if (old && p.etag && old.etag && p.etag === old.etag && old.f && old.w) {
+            add('sida', old.title, old.body, href, '', old.date, old.etag);
+            const reusedDoc = docs[at.get(`sida|${old.title || '(utan titel)'}|${href}`)];
+            if (reusedDoc) { reusedDoc.f = old.f; reusedDoc.w = old.w; }
+            reused++;
+          } else {
+            add('sida', p.title || slug, strip(p.body), href, '', p.updated_at || '', p.etag);
+            fetched++;
+          }
         } catch (e) { console.warn('[cts] page', slug, e); }
       }
     };
     await Promise.all(Array.from({ length: 4 }, worker));
+    if (reused) onProgress(`sidor: ${reused} oförändrade, ${fetched} hämtade`);
 
     onProgress('uppgifter');
     try {
@@ -108,18 +144,17 @@
     } catch (e) { console.warn('[cts] files', e); }
 
     const indexed = docs.map(d => {
+      if (d.f && d.w) return d;
       const f = C.fold(d.title + ' ' + d.body);
       return Object.assign({}, d, { f, w: [...new Set(f.split(/[^a-z0-9]+/).filter(x => x.length > 2))] });
     });
-    return { cid, ts: Date.now(), docs: indexed };
+    return { cid, ts: Date.now(), docs: indexed, reused, fetched };
   }
 
   async function getIndex(cid, force, onProgress) {
-    if (!force) {
-      const c = (await chrome.storage.local.get(KEY(cid)))[KEY(cid)];
-      if (c && Date.now() - c.ts < TTL) return c;
-    }
-    const fresh = await buildIndex(cid, onProgress);
+    const prev = (await chrome.storage.local.get(KEY(cid)))[KEY(cid)];
+    if (!force && prev && Date.now() - prev.ts < TTL) return prev;
+    const fresh = await buildIndex(cid, onProgress, prev);
     await chrome.storage.local.set({ [KEY(cid)]: fresh });
     return fresh;
   }
@@ -144,6 +179,17 @@
     opts.local = false;
     boxes.local.parentElement.title = `Lokal dokumenttext: ej ansluten (${reason || 'okänd orsak'})`;
     if (metaEl.textContent) metaEl.textContent += ' · lokal ej ansluten';
+    if (reason !== 'not connected') return;   // only offer it when the endpoint is simply not granted
+    suggEl.innerHTML = '<a href="#" id="cts-connect">Anslut lokal dokumenttext</a>';
+    const btn = suggEl.querySelector('#cts-connect');
+    if (btn) btn.onclick = async ev => {
+      ev.preventDefault();
+      try {
+        const res = await chrome.runtime.sendMessage({ type: 'connectLocal' });
+        if (res && res.ok) { localWarned = false; opts.local = true; boxes.local.checked = true; run(); }
+        else meta('anslutningen nekades');
+      } catch { meta('kunde inte ansluta'); }
+    };
   }
 
   async function localSearch(q) {
@@ -183,9 +229,14 @@
         <label><input type="checkbox" id="cts-word"> Hela ord</label>
         <label title="Fråga unistudy på 127.0.0.1:8791 om dokumenttext"><input type="checkbox" id="cts-local" checked> Dokument (lokal)</label>
       </div>
+      <div id="cts-tabs">
+        <button id="cts-tab-search" class="on">Sök</button>
+        <button id="cts-tab-due">Kommande</button>
+      </div>
       <div id="cts-meta"></div>
       <div id="cts-suggest"></div>
       <ul id="cts-results"></ul>
+      <ul id="cts-due" hidden></ul>
     </div>`;
   document.body.appendChild(root);
 
@@ -219,6 +270,9 @@
     };
   }
 
+  const idxLine = i => `${i.docs.length} poster${i.reused ? `, ${i.reused} återanvända` : ''}` +
+    `${i.fetched ? `, ${i.fetched} hämtade` : ''}, ${new Date(i.ts).toLocaleTimeString()}`;
+
   async function ensureIndexes(force) {
     const courses = await coursesCache();
     if (!courses.length) { meta('hittar inga kurser'); return false; }
@@ -245,7 +299,7 @@
     if (!courseId) return;
     try {
       const idx = await getIndex(courseId, false, meta);
-      meta(`${idx.docs.length} poster, ${new Date(idx.ts).toLocaleTimeString()}`);
+      meta(idxLine(idx));
     } catch (e) { meta('kunde inte indexera: ' + e.message); }
   };
 
@@ -255,7 +309,7 @@
     meta('bygger om index…');
     try {
       const idx = await getIndex(courseId, true, meta);
-      meta(`${idx.docs.length} poster, ${new Date(idx.ts).toLocaleTimeString()}`);
+      meta(idxLine(idx));
     } catch (e) { meta('kunde inte indexera: ' + e.message); }
   };
 
@@ -352,6 +406,83 @@
     }
     listEl.innerHTML = rows.join('') + localRows.join('');
   }
+
+  // ---------------------------------------------------------------- due soon
+  const dueEl = root.querySelector('#cts-due');
+  const tabSearch = root.querySelector('#cts-tab-search');
+  const tabDue = root.querySelector('#cts-tab-due');
+  let dueCache = null;   // {ts, items}
+
+  function countdown(iso) {
+    if (!iso) return '';
+    const ms = new Date(iso) - Date.now();
+    const h = Math.round(ms / 36e5);
+    if (ms < 0) return `försenad ${Math.max(1, Math.round(-ms / 864e5))} d`;
+    if (h < 24) return `${Math.max(1, h)} h`;
+    return `${Math.round(h / 24)} d`;
+  }
+
+  async function fetchDue() {
+    if (dueCache && Date.now() - dueCache.ts < 10 * 60 * 1000) return dueCache.items;
+    const today = new Date().toISOString().slice(0, 10);
+    const items = [];
+    const seen = new Set();
+    const push = (title, at, url, kind, course) => {
+      if (!title || !at) return;
+      const key = `${title}|${at}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push({ title, at, url, kind, course });
+    };
+    try {
+      for (const it of await apiAll(`/planner/items?start_date=${today}`)) {
+        const p = it.plannable || {};
+        push(p.title || it.plannable_type, p.due_at || it.plannable_date, it.html_url,
+             it.plannable_type, it.context_name);
+      }
+    } catch (e) { console.warn('[cts] planner', e); }
+    for (const c of await coursesCache()) {
+      try {
+        for (const ev of await apiAll(`/calendar_events?context_codes[]=course_${c.id}&type=event`)) {
+          push(ev.title, ev.start_at, `/courses/${c.id}`, 'event', c.course_code || c.name);
+        }
+      } catch (e) { console.warn('[cts] calendar', c.id, e); }
+    }
+    items.sort((a, b) => new Date(a.at) - new Date(b.at));
+    dueCache = { ts: Date.now(), items };
+    return items;
+  }
+
+  async function renderDue() {
+    dueEl.innerHTML = '<li class="s">hämtar…</li>';
+    let items = [];
+    try { items = await fetchDue(); }
+    catch (e) { dueEl.innerHTML = ''; return meta('kunde inte hämta: ' + e.message); }
+    const now = Date.now();
+    const soon = items.filter(i => new Date(i.at) >= now).slice(0, 40);
+    const late = items.filter(i => new Date(i.at) < now).slice(-5).reverse();
+    const row = i => `<li class="${new Date(i.at) < now ? 'late' : ''}">
+      <span class="pg">${esc(countdown(i.at))}</span>
+      <a class="t" href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>
+      <div class="s">${esc(i.course || '')} · ${new Date(i.at).toLocaleString('sv-SE',
+        { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${i.kind === 'event' ? ' · kalender' : ''}</div>
+    </li>`;
+    dueEl.innerHTML = late.map(row).join('') + soon.map(row).join('');
+    meta(`${soon.length} kommande${late.length ? `, ${late.length} försenade` : ''}`);
+  }
+
+  function switchTab(which) {
+    const isDue = which === 'due';
+    tabDue.classList.toggle('on', isDue);
+    tabSearch.classList.toggle('on', !isDue);
+    dueEl.hidden = !isDue;
+    listEl.hidden = isDue;
+    qEl.parentElement.style.display = isDue ? 'none' : '';
+    root.querySelector('#cts-opts').style.display = isDue ? 'none' : '';
+    if (isDue) renderDue(); else meta('');
+  }
+  tabSearch.onclick = () => switchTab('search');
+  tabDue.onclick = () => switchTab('due');
 
   let debounce;
   qEl.addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(run, 250); });

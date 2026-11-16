@@ -1,15 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Canvas Text Search",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Full-text search across Canvas: pages, assignments with rubrics, modules, discussions and files, all courses from the dashboard, plus document text from the local unistudy index when it is running.",
   "permissions": [
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
-    "https://shh.instructure.com/*",
-    "http://127.0.0.1:8791/*",
-    "https://*.ts.net/*"
+    "https://shh.instructure.com/*"
   ],
   "content_scripts": [
     {
@@ -33,5 +32,9 @@
   },
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "optional_host_permissions": [
+    "http://127.0.0.1:8791/*",
+    "https://*.ts.net/*"
+  ]
 }

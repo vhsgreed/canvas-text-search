@@ -22,3 +22,11 @@
 #cts-results .c { display: inline-block; font-size: 10px; opacity: .75; margin-right: 6px; }
 #cts-results .pg { font-size: 10px; opacity: .7; margin-left: 4px; }
 
+
+/* tabs + due timeline */
+#cts-tabs { display: flex; gap: 4px; margin: 6px 0 2px; }
+#cts-tabs button { flex: 1; font-size: 11px; padding: 3px 6px; border-radius: 4px;
+  border: 1px solid var(--border, #ccc); background: transparent; color: inherit; cursor: pointer; }
+#cts-tabs button.on { background: var(--accent, #e8e8e8); font-weight: 600; }
+#cts-due li.late .pg { color: #b3261e; font-weight: 600; }
+#cts-due li { list-style: none; }
