@@ -27,7 +27,27 @@ it in a few milliseconds.
 | `type:sida` | only pages (also `uppgift`, `fil`, `modul`, `diskussion`, `anvisning`) |
 | `filetype:pdf` | only files with that extension |
 | `intitle:vetenskaplig` | only documents whose title contains it |
+| `before:2026-11-01` / `after:2026-09-01` | filter on the document's own date (page updated, assignment due, file date) |
+| `+plagiatkontroll` | required word (redundant with AND, accepted for habit) |
 | `pla[gy]iat\w*` | regular expression (Regex checkbox) |
+
+**Did you mean:** a plain search that finds nothing is re-checked fuzzily, and if a near word
+exists in the index you get "Menade du ourginal?" as a click that retries with fuzzy on. This
+is how `OURIGINAL` (the correct spelling) leads to `OURGINAL` (what Canvas actually wrote).
+
+**Deep links:** every result links with a text fragment (`#:~:text=`), so the page opens
+scrolled to the phrase with the browser highlighting it. No page cooperation needed, and it
+degrades to a plain link where unsupported.
+
+See [DESIGN.md](DESIGN.md) for which features were borrowed from Google and Yandex, which were
+rejected and why.
+
+## Tests
+```bash
+npm test           # node --test tests/*.test.js, 24 tests, no dependencies
+```
+The search logic lives in `search-core.js` (pure functions, no DOM or chrome API), which is what
+makes the suite possible; `content.js` only does API calls, storage and rendering.
 
 Terms combine with implicit AND. Checkboxes: **Skiftlägeskänslig** (case), **Regex**,
 **Fuzzy** (typo tolerant, Damerau-Levenshtein: `plagiatkontorl` finds `plagiatkontroll`,
