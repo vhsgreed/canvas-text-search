@@ -8,7 +8,9 @@
   const KEY = cid => `idx:v3:${cid}`;
   const C = globalThis.CTS_CORE;
   const courseId = (location.pathname.match(/\/courses\/(\d+)/) || [])[1];
-  const dash = !courseId && (location.pathname === '/' || location.pathname.startsWith('/dashboard'));
+  // '/courses' is the All Courses tree: no course id in the URL, but it is still dashboard mode.
+  const dash = !courseId && (location.pathname === '/' || location.pathname === '/courses' ||
+                             location.pathname === '/courses/' || location.pathname.startsWith('/dashboard'));
   if (!C || (!courseId && !dash) || document.getElementById('cts-root')) return;
 
   // Block elements become "\n" so the index keeps paragraph structure: a text-fragment

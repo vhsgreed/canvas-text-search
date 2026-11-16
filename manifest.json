@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Canvas Text Search",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Full-text search across Canvas: pages, assignments with rubrics, modules, discussions and files, all courses from the dashboard, plus document text from the local unistudy index when it is running.",
   "permissions": [
     "storage",
@@ -13,6 +13,8 @@
   "content_scripts": [
     {
       "matches": [
+        "https://shh.instructure.com/courses",
+        "https://shh.instructure.com/courses?*",
         "https://shh.instructure.com/courses/*",
         "https://shh.instructure.com/",
         "https://shh.instructure.com/dashboard*"
