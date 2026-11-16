@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Canvas Text Search",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Full-text search across Canvas: pages, assignments with rubrics, modules, discussions and files, all courses from the dashboard, plus document text from the local unistudy index when it is running.",
   "permissions": [
     "storage"

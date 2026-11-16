@@ -135,13 +135,25 @@
   // ---------------------------------------------------------------- local deep layer
   // The service worker does the request: a page-initiated fetch to loopback or a private
   // address is blocked by Chrome's Local Network Access, even with CORS headers.
+  let localWarned = false;
+  function localUnavailable(reason) {
+    // say so once, instead of looking like a search that silently found nothing
+    if (localWarned) return;
+    localWarned = true;
+    boxes.local.checked = false;
+    opts.local = false;
+    boxes.local.parentElement.title = `Lokal dokumenttext: ej ansluten (${reason || 'okänd orsak'})`;
+    if (metaEl.textContent) metaEl.textContent += ' · lokal ej ansluten';
+  }
+
   async function localSearch(q) {
     const cid = courseId || (await coursesCache())[0]?.id;
     if (!cid) return null;
     try {
       const res = await chrome.runtime.sendMessage({ type: 'localSearch', course: cid, q, limit: 10 });
-      return res && res.ok ? res.data : null;
-    } catch { return null; }
+      if (!res || !res.ok) { localUnavailable(res && res.reason); return null; }
+      return res.data;
+    } catch { localUnavailable('service worker saknas'); return null; }
   }
 
   let _courses;
