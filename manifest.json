@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Canvas Text Search",
+  "version": "0.1.0",
+  "description": "Full-text search across a Canvas course: modules, pages, assignments, discussions, files and announcements. Uses your existing Canvas session, stores a local index.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://shh.instructure.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://shh.instructure.com/courses/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Canvas Text Search"
+  }
+}
