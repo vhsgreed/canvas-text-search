@@ -78,6 +78,32 @@ So 102 documents are behind file-tree links, and a further 19 SharePoint share l
 any tree at all and never appear in `/files`. A name-only index therefore covers roughly half a
 course's reading material: **the file tree is not the corpus, it is one of three entrances**.
 
+### Can metadata replace parsing? No.
+
+Measured over the 76 PDFs already in the local mirror:
+
+| First-page text layer | Files |
+|---|---|
+| real text (>500 chars) | 38 |
+| thin (50-500 chars) | 27 |
+| none (<50 chars) | 11 |
+
+Canvas returns `display_name`, `size`, `content-type`, `created_at` and, for some files, a
+title and author inside the PDF. That is enough to find a file by name and nothing else: the
+title of these documents lives in the body, not in metadata. SharePoint share links give no
+metadata at all before the request, and then only headers (`Content-Type`,
+`Content-Disposition`, length) that name the file.
+
+So the answer is **download and parse**, with the parse cached. Extraction is cheap: `pdftotext`
+for PDF, `zipfile` plus a tag strip for the Office XML, no third-party dependency. The
+complication is the ~half of the corpus whose page 1 is an image, mostly slide decks exported to
+PDF. Those need a page-by-page check and then either a "no text, skipped" flag or OCR, which is
+a separate pipeline and a separate decision.
+
+Design consequence: store the extracted text keyed by `file id + updated_at`, never the
+download. Bytes are read once, the text is kept, the PDF is not. That keeps the local footprint
+small and matches the boundary above.
+
 ### What that changed in the build
 
 Three of these findings were defects, not features:
@@ -144,7 +170,7 @@ Legend: **in** = implemented, **plan** = worth doing next, **no** = rejected wit
 | `lang:` | no | yes | **no** | Corpus is Swedish with English articles; no language split to filter on |
 | `related:`, `link:`, `cache:` | yes | partial | **no** | Web-graph features with no meaning inside one course |
 | PageRank-style link graph | yes | yes | **no** | Course content has no link structure worth ranking |
-| Query autocomplete from logs | yes | yes | **no** | No telemetry, no shared corpus, by design |
+| Query autocomplete from logs | yes | yes | **no, until re-decided** | Opt-in only, and only above 100 stars or 1000 downloads; local file storage otherwise. See the boundary section |
 | Semantic / embedding search | yes | yes | **plan** | Would help "assessment" find "examination"; needs a local model, so it is a separate decision |
 
 ## Design decisions worth recording
@@ -229,6 +255,12 @@ line this project draws, written down so it does not drift:
 - **Watch what a share link exposes.** A SharePoint share link can open a document uploaded by
   someone else under their name, sometimes with their comments. Index it for the course's
   content, not the author's identity, and never index other students' submissions.
+
+**Decided 2026-11-16:** the tool writes only to local file storage. Search history is a local
+log, never a network call, and no index content is uploaded anywhere. Query-log autocomplete
+stays a stretch goal with two gates: opt-in by the user, and traction above 100 stars or 1000
+downloads, since a shared corpus is what would make it worth having. Until both hold, the
+answer stays "no telemetry".
 
 ## Out of scope, on purpose
 
