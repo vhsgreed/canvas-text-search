@@ -22,6 +22,10 @@
     .replace(/[åä]/g, 'a').replace(/ö/g, 'o').replace(/[éè]/g, 'e')
     .replace(/[ \t\u00a0]+/g, ' ');
 
+  // lowercase + diacritic fold that preserves length exactly, so offsets survive
+  const normLen = s => (s == null ? '' : String(s)).toLowerCase()
+    .replace(/[åä]/g, 'a').replace(/[ö]/g, 'o').replace(/[éè]/g, 'e');
+
   const escRx = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   // Damerau-Levenshtein with an early exit; catches typos, insertions and transpositions
@@ -172,8 +176,20 @@
         else c = countPlain(hay, term.t);
         if (!c) return null;
         if (at < 0) {
-          const pos = hay.indexOf(anchor);
-          at = pos < 0 ? 0 : pos;
+          // measure in the original text: fold() collapses whitespace, so a folded offset
+          // drifts and snippets land in the wrong place
+          // A phrase may match only after folding (a line break inside it), so locate its
+          // leading words with whitespace tolerance: whole phrase first, then fewer words.
+          // normLen() keeps length, so an offset in it is an offset in the original
+          const hayRaw = o.caseSensitive ? `${doc.title}\n${doc.body}` : normLen(`${doc.title}\n${doc.body}`);
+          const target = o.caseSensitive ? anchor : normLen(anchor);
+          const words = target.split(/\s+/).filter(Boolean).slice(0, 3);
+          at = 0;
+          for (let n = words.length; n > 0; n--) {
+            const pat = new RegExp(words.slice(0, n).map(escRx).join('\\s+'));
+            const found = pat.exec(hayRaw);
+            if (found) { at = found.index; break; }
+          }
         }
         if (anchor.length > bestText.length) bestText = anchor; // the real indexed spelling
         score += (title.includes(anchor) ? 12 : 0) + Math.min(c, 6);
