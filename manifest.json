@@ -1,13 +1,21 @@
 {
   "manifest_version": 3,
   "name": "Canvas Text Search",
-  "version": "0.4.0",
-  "description": "Full-text search across a Canvas course: pages, assignments with rubrics, modules, discussions and files. Google-style operators, regex, fuzzy match, deep links to the match.",
+  "version": "0.5.0",
+  "description": "Full-text search across Canvas: pages, assignments with rubrics, modules, discussions and files, all courses from the dashboard, plus document text from the local unistudy index when it is running.",
   "permissions": ["storage"],
-  "host_permissions": ["https://shh.instructure.com/*"],
+  "host_permissions": [
+    "https://shh.instructure.com/*",
+    "http://127.0.0.1:8791/*",
+    "https://*.ts.net/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://shh.instructure.com/courses/*"],
+      "matches": [
+        "https://shh.instructure.com/courses/*",
+        "https://shh.instructure.com/",
+        "https://shh.instructure.com/dashboard*"
+      ],
       "js": ["search-core.js", "content.js"],
       "css": ["panel.css"],
       "run_at": "document_idle"

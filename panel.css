@@ -16,3 +16,9 @@
 #cts-results .b{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#666;background:#eee;border-radius:4px;padding:1px 5px;margin-right:6px}
 #cts-results .s{margin-top:3px;color:#444;font-size:12px}
 #cts-results mark{background:#fff2a8;padding:0 1px}
+
+/* dashboard + local deep-index rows */
+#cts-results li.loc { border-left: 2px solid var(--accent, #7a5); padding-left: 6px; }
+#cts-results .c { display: inline-block; font-size: 10px; opacity: .75; margin-right: 6px; }
+#cts-results .pg { font-size: 10px; opacity: .7; margin-left: 4px; }
+

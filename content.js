@@ -1,20 +1,23 @@
-/* Canvas Text Search: UI and indexing. All search logic lives in search-core.js (pure,
-   unit tested). This file only talks to the Canvas API, chrome.storage and the DOM. */
+/* Canvas Text Search: UI and indexing. Search logic lives in search-core.js (pure, tested).
+   Two modes: one course (/courses/<id>) and the dashboard (/), where every enrolled course
+   is indexed and searched at once. When the local unistudy endpoint answers, its document
+   text is merged in, labelled, and the page still works when it does not. */
 (() => {
   const API = '/api/v1';
   const TTL = 6 * 60 * 60 * 1000;
+  const KEY = cid => `idx:v3:${cid}`;
+  const LOCAL = ['http://127.0.0.1:8791', 'https://geekom.tail4fff58.ts.net'];
   const C = globalThis.CTS_CORE;
   const courseId = (location.pathname.match(/\/courses\/(\d+)/) || [])[1];
-  if (!courseId || document.getElementById('cts-root') || !C) return;
+  const dash = !courseId && (location.pathname === '/' || location.pathname.startsWith('/dashboard'));
+  if (!C || (!courseId && !dash) || document.getElementById('cts-root')) return;
 
-  // Block elements become "\n" so the index keeps the page's paragraph structure. Without
-  // this, "</p><p>" glues sentences together and every text-fragment anchor that spans
-  // two paragraphs silently fails to match.
+  // Block elements become "\n" so the index keeps paragraph structure: a text-fragment
+  // anchor can never cross a block boundary, and "</p><p>" would glue sentences together.
   const strip = h => {
     const html = String(h || '')
       .replace(/<\/(p|div|li|ul|ol|h[1-6]|tr|table|blockquote|section|article)>/gi, '\n')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<li[^>]*>/gi, '\n');
+      .replace(/<br\s*\/?>/gi, '\n').replace(/<li[^>]*>/gi, '\n');
     const txt = new DOMParser().parseFromString(html, 'text/html').body.textContent || '';
     return txt.replace(/[ \t\u00a0]+/g, ' ').replace(/\n[ ]*/g, '\n').replace(/\n{2,}/g, '\n').trim();
   };
@@ -39,9 +42,8 @@
   // ---------------------------------------------------------------- indexing
   async function buildIndex(cid, onProgress) {
     const docs = [];
-    // key -> position. A module item creates an empty stub for its assignment/page, and the
-    // full document arrives later with the same key; the richer one must win, or rubric text
-    // and task descriptions are silently dropped.
+    // A module item creates an empty stub for its assignment or page; the full document
+    // arrives later with the same key, so the richer one must win.
     const at = new Map();
     const add = (type, title, body, href, ext, date) => {
       const key = `${type}|${title}|${href}`;
@@ -49,20 +51,16 @@
                     ext: ext || '', date: (date || '').slice(0, 10) };
       const pos = at.get(key);
       if (pos === undefined) { at.set(key, docs.length); docs.push(doc); return; }
-      const mine = doc.body.length + doc.date.length;
-      const theirs = docs[pos].body.length + docs[pos].date.length;
-      if (mine > theirs) docs[pos] = doc;
+      if (doc.body.length + doc.date.length > docs[pos].body.length + docs[pos].date.length) docs[pos] = doc;
     };
 
     onProgress('moduler');
     let modules = [];
     try { modules = await apiAll(`/courses/${cid}/modules?include[]=items`); }
     catch (e) { console.warn('[cts] modules', e); }
-
     const pageUrls = new Map();
     for (const m of modules) for (const it of (m.items || [])) {
       add('modul', `${m.name}: ${it.title}`, m.name, it.html_url || it.url, '', '');
-      // Page items carry the slug in page_url; `url` is a full API URL
       if (it.type === 'Page' && (it.page_url || it.url)) pageUrls.set(it.page_url || it.url, it.url);
       if (it.type === 'Assignment' && it.content_id) add('uppgift', it.title, '', `/courses/${cid}/assignments/${it.content_id}`, '', '');
       if (it.type === 'Discussion' && it.content_id) add('diskussion', it.title, '', `/courses/${cid}/discussion_topics/${it.content_id}`, '', '');
@@ -84,8 +82,7 @@
 
     onProgress('uppgifter');
     try {
-      // include[]=rubric matters: without it Canvas returns an empty rubric array, and the
-      // grading criteria are exactly what students search for
+      // include[]=rubric matters: without it Canvas returns rubric: [] and the criteria vanish
       for (const a of await apiAll(`/courses/${cid}/assignments?include[]=rubric`)) {
         const rub = (a.rubric || []).map(r => `${r.description} ${r.long_description || ''}`).join(' ');
         add('uppgift', a.name, `${strip(a.description)} ${rub}`,
@@ -93,11 +90,13 @@
       }
     } catch (e) { console.warn('[cts] assignments', e); }
 
-    onProgress('diskussioner');
+    onProgress('anvisningar');
     try {
+      for (const d of await apiAll(`/courses/${cid}/discussion_topics?only_announcements=true`)) {
+        add('anvisning', d.title, strip(d.message), `/courses/${cid}/discussion_topics/${d.id}`, '', d.posted_at || '');
+      }
       for (const d of await apiAll(`/courses/${cid}/discussion_topics`)) {
-        add(d.pinned ? 'anvisning' : 'diskussion', d.title, strip(d.message),
-            `/courses/${cid}/discussion_topics/${d.id}`, '', d.posted_at || '');
+        add('diskussion', d.title, strip(d.message), `/courses/${cid}/discussion_topics/${d.id}`, '', d.posted_at || '');
       }
     } catch (e) { console.warn('[cts] discussions', e); }
 
@@ -111,39 +110,78 @@
 
     const indexed = docs.map(d => {
       const f = C.fold(d.title + ' ' + d.body);
-      const w = [...new Set(f.split(/[^a-z0-9]+/).filter(x => x.length > 2))];
-      return Object.assign({}, d, { f, w });
+      return Object.assign({}, d, { f, w: [...new Set(f.split(/[^a-z0-9]+/).filter(x => x.length > 2))] });
     });
     return { cid, ts: Date.now(), docs: indexed };
   }
 
   async function getIndex(cid, force, onProgress) {
-    const key = `idx:v3:${cid}`; // v3: rubric text; older caches are ignored
     if (!force) {
-      const c = (await chrome.storage.local.get(key))[key];
+      const c = (await chrome.storage.local.get(KEY(cid)))[KEY(cid)];
       if (c && Date.now() - c.ts < TTL) return c;
     }
     const fresh = await buildIndex(cid, onProgress);
-    await chrome.storage.local.set({ [key]: fresh });
+    await chrome.storage.local.set({ [KEY(cid)]: fresh });
     return fresh;
+  }
+
+  async function storedIndexes() {
+    const all = await chrome.storage.local.get(null);
+    return Object.entries(all)
+      .filter(([k]) => k.startsWith('idx:v3:'))
+      .map(([, v]) => v)
+      .filter(v => v && Array.isArray(v.docs));
+  }
+
+  // ---------------------------------------------------------------- local deep layer
+  let localBase;
+  async function localSearch(q) {
+    if (localBase === undefined) {
+      localBase = null;
+      for (const b of LOCAL) {
+        try {
+          const r = await fetch(`${b}/health`, { signal: AbortSignal.timeout(1200) });
+          if (r.ok) { localBase = b; break; }
+        } catch { /* not running, that is fine */ }
+      }
+    }
+    if (!localBase) return null;
+    const cid = courseId || (await coursesCache())[0]?.id;
+    if (!cid) return null;
+    try {
+      const r = await fetch(`${localBase}/search?course=${cid}&q=${encodeURIComponent(q)}&docs=1&limit=10`,
+        { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch { return null; }
+  }
+
+  let _courses;
+  async function coursesCache() {
+    if (!_courses) {
+      try { _courses = (await apiAll('/courses')).filter(c => !c.access_restricted_by_date); }
+      catch { _courses = []; }
+    }
+    return _courses;
   }
 
   // ---------------------------------------------------------------- UI
   const root = document.createElement('div');
   root.id = 'cts-root';
   root.innerHTML = `
-    <button id="cts-btn" title="Sök i kursen (Ctrl+Shift+F)">⌕</button>
+    <button id="cts-btn" title="Sök i ${dash ? 'alla kurser' : 'kursen'} (Ctrl+Shift+F)">⌕</button>
     <div id="cts-panel">
       <div id="cts-head">
-        <input id="cts-q" placeholder="Sök i kursen…  &quot;fras&quot;  -uteslut  type:sida  intitle:ord  after:2026-09-01">
+        <input id="cts-q" placeholder="${dash ? 'Sök i alla indexerade kurser…' : 'Sök i kursen…'}  &quot;fras&quot;  -uteslut  type:sida  intitle:ord">
         <button id="cts-go">Sök</button>
-        <button id="cts-re" title="Bygg om index">↻</button>
+        <button id="cts-re" title="${dash ? 'Indexera om alla kurser' : 'Bygg om index'}">↻</button>
       </div>
       <div id="cts-opts">
         <label><input type="checkbox" id="cts-case"> Skiftlägeskänslig</label>
         <label><input type="checkbox" id="cts-regex"> Regex</label>
         <label><input type="checkbox" id="cts-fuzzy"> Fuzzy</label>
         <label><input type="checkbox" id="cts-word"> Hela ord</label>
+        <label title="Fråga unistudy på 127.0.0.1:8791 om dokumenttext"><input type="checkbox" id="cts-local" checked> Dokument (lokal)</label>
       </div>
       <div id="cts-meta"></div>
       <div id="cts-suggest"></div>
@@ -162,10 +200,9 @@
     regex: root.querySelector('#cts-regex'),
     fuzzy: root.querySelector('#cts-fuzzy'),
     wholeWord: root.querySelector('#cts-word'),
+    local: root.querySelector('#cts-local'),
   };
-
-  let index = null;
-  let opts = { caseSensitive: false, regex: false, fuzzy: false, wholeWord: false };
+  let opts = { caseSensitive: false, regex: false, fuzzy: false, wholeWord: false, local: true };
 
   chrome.storage.local.get('opts').then(g => {
     if (g && g.opts) {
@@ -182,26 +219,43 @@
     };
   }
 
+  async function ensureIndexes(force) {
+    const courses = await coursesCache();
+    if (!courses.length) { meta('hittar inga kurser'); return false; }
+    let i = 0;
+    for (const c of courses) {
+      i++;
+      meta(`indexerar ${c.course_code || c.name} (${i}/${courses.length})`);
+      try { await getIndex(c.id, force, m => meta(`${c.course_code || c.name}: ${m}`)); }
+      catch (e) { console.warn('[cts] index', c.id, e); }
+    }
+    const n = (await storedIndexes()).length;
+    meta(`${n} kurser indexerade`);
+    return true;
+  }
+
   root.querySelector('#cts-btn').onclick = async () => {
     panel.classList.toggle('open');
     if (!panel.classList.contains('open')) return;
     qEl.focus();
-    if (!index) {
-      meta('indexerar kursen…');
-      try {
-        index = await getIndex(courseId, false, meta);
-        meta(`${index.docs.length} poster, ${new Date(index.ts).toLocaleTimeString()}`);
-      } catch (e) { meta('kunde inte indexera: ' + e.message); }
+    if (dash) {
+      if (!(await storedIndexes()).length) await ensureIndexes(false);
+      return;
     }
+    if (!courseId) return;
+    try {
+      const idx = await getIndex(courseId, false, meta);
+      meta(`${idx.docs.length} poster, ${new Date(idx.ts).toLocaleTimeString()}`);
+    } catch (e) { meta('kunde inte indexera: ' + e.message); }
   };
 
   root.querySelector('#cts-re').onclick = async () => {
-    listEl.innerHTML = '';
-    suggEl.innerHTML = '';
+    listEl.innerHTML = ''; suggEl.innerHTML = '';
+    if (dash) { await ensureIndexes(true); return; }
     meta('bygger om index…');
     try {
-      index = await getIndex(courseId, true, meta);
-      meta(`${index.docs.length} poster, ${new Date(index.ts).toLocaleTimeString()}`);
+      const idx = await getIndex(courseId, true, meta);
+      meta(`${idx.docs.length} poster, ${new Date(idx.ts).toLocaleTimeString()}`);
     } catch (e) { meta('kunde inte indexera: ' + e.message); }
   };
 
@@ -212,50 +266,64 @@
       catch { /* reported in the meta line */ }
       return out;
     }
-    const terms = C.parseQuery(raw, o).terms
-      .filter(t => t.length > 1).map(C.escRx).sort((a, b) => b.length - a.length);
+    const terms = C.parseQuery(raw, o).terms.filter(t => t.length > 1)
+      .map(C.escRx).sort((a, b) => b.length - a.length);
     for (const w of terms) {
       out = out.replace(new RegExp(`(${w})`, o.caseSensitive ? 'g' : 'gi'), '<mark>$1</mark>');
     }
     return out;
   }
 
-  // phrase used for the text fragment: whole words, verified to exist in the document.
-  // Returns '' when nothing verifies, which yields a plain link instead of a dead fragment.
-  function anchorPhrase(hit, raw, o) {
-    return C.anchorTarget(hit, raw, o);
+  async function localHitRows(data, raw) {
+    if (!data || !data.hits || !data.hits.length) return [];
+    return data.hits.map(h => {
+      const page = h.page ? `s. ${h.page}` : '';
+      return `<li class="loc">
+        <span class="b">lokal · ${esc(h.type)}</span> ${page ? `<span class="pg">${page}</span>` : ''}
+        <a class="t" href="${esc(h.url)}" target="_blank" rel="noopener">${highlight(h.title, raw, opts)}</a>
+        <div class="s">${highlight(h.snippet || '', raw, opts)}</div>
+      </li>`;
+    });
   }
 
   async function run() {
-    if (!index) {
-      try { index = await getIndex(courseId, false, meta); }
+    const raw = qEl.value.trim();
+    suggEl.innerHTML = '';
+    if (!raw) { listEl.innerHTML = ''; meta(''); qEl.classList.remove('bad'); return; }
+
+    let idx;
+    if (dash) {
+      const stored = await storedIndexes();
+      if (!stored.length) { meta('indexera först: tryck ↻'); return; }
+      const byCid = new Map();
+      for (const s of stored) byCid.set(String(s.cid), s);
+      const courses = await coursesCache();
+      const label = new Map(courses.map(c => [String(c.id), c.course_code || c.name || c.id]));
+      const docs = [];
+      for (const s of stored) {
+        const tag = label.get(String(s.cid)) || s.cid;
+        for (const d of s.docs) docs.push(Object.assign({}, d, { title: `${d.title}`, course: tag }));
+      }
+      idx = { cid: 'all', docs };
+    } else {
+      try { idx = await getIndex(courseId, false, meta); }
       catch (e) { return meta('kunde inte indexera: ' + e.message); }
     }
-    suggEl.innerHTML = '';
-    const raw = qEl.value.trim();
-    if (!raw) { listEl.innerHTML = ''; meta(''); qEl.classList.remove('bad'); return; }
+
     const t0 = performance.now();
-    const res = C.search(index, raw, opts);
+    const res = C.search(idx, raw, opts);
     const ms = Math.round(performance.now() - t0);
-    if (res.error) {
-      qEl.classList.add('bad');
-      meta(res.error);
-      listEl.innerHTML = '';
-      return;
-    }
+    if (res.error) { qEl.classList.add('bad'); meta(res.error); listEl.innerHTML = ''; return; }
     qEl.classList.remove('bad');
 
     if (!res.total && !opts.fuzzy && !opts.regex) {
-      const alt = C.suggest(index, raw, opts);
+      const alt = C.suggest(idx, raw, opts);
       if (alt) {
-        meta(`0 träffar på "${raw}" i ${index.docs.length} poster`);
+        meta(`0 träffar på "${raw}" i ${idx.docs.length} poster`);
         suggEl.innerHTML = `Menade du <a href="#" id="cts-dym">${esc(alt)}</a>?`;
         suggEl.querySelector('#cts-dym').onclick = ev => {
-          ev.preventDefault();
-          qEl.value = alt;
-          opts.fuzzy = true;
-          boxes.fuzzy.checked = true;
-          run();
+          ev.preventDefault(); qEl.value = alt;
+          opts.fuzzy = true; boxes.fuzzy.checked = true; run();
         };
         listEl.innerHTML = '';
         return;
@@ -263,17 +331,26 @@
     }
 
     if (res.empty) { meta('skriv något att söka på'); return; }
-    meta(`${res.total} träffar på "${raw}" i ${index.docs.length} poster (${ms} ms)`);
 
-    listEl.innerHTML = res.hits.map(h => {
-      const href = C.deepLink(h.href, anchorPhrase(h, raw, opts));
-      return `
-      <li>
-        <span class="b">${esc(h.type)}</span>
+    const rows = res.hits.map(h => {
+      const anchor = C.anchorTarget(h, raw, opts);
+      const href = C.deepLink(h.href, anchor);
+      const tag = dash && h.course ? `<span class="c">${esc(h.course)}</span>` : '';
+      return `<li>${tag}<span class="b">${esc(h.type)}</span>
         <a class="t" href="${esc(href)}" target="_blank" rel="noopener">${highlight(h.title, raw, opts)}</a>
-        <div class="s">${highlight(C.snippet(h, h.at), raw, opts)}</div>
-      </li>`;
-    }).join('');
+        <div class="s">${highlight(C.snippet(h, h.at), raw, opts)}</div></li>`;
+    });
+
+    let localRows = [];
+    if (opts.local && !opts.regex) {
+      const data = await localSearch(raw);
+      localRows = await localHitRows(data, raw);
+      if (data && data.total) meta(`${res.total} träffar på "${raw}" i ${idx.docs.length} poster (${ms} ms) + ${data.total} i dokument`);
+    }
+    if (!localRows.length || !/dokument/.test(metaEl.textContent)) {
+      meta(`${res.total} träffar på "${raw}" i ${idx.docs.length} poster (${ms} ms)`);
+    }
+    listEl.innerHTML = rows.join('') + localRows.join('');
   }
 
   let debounce;
